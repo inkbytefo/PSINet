@@ -43,7 +43,6 @@ class Simulator:
     # ------------------------------- BUILD ---------------------------------
     def build(self):
         logging.info("Building network components...")
-        b2.prefs.codegen.target = 'numpy'
 
         sim_p = self.config['simulation_params']
         inp_p = self.config['input_params']
@@ -51,35 +50,64 @@ class Simulator:
         mon_p = self.config['monitor_params']
         learn_p = self.config['learning_params']
 
-        # 1) Input preparation: support mnist for this milestone
+        # Device selection
+        device = sim_p.get('brian2_device', 'runtime')
+        if device == 'cpp_standalone':
+            b2.set_device('cpp_standalone', directory=str(self.output_dir / 'brian2_build'))
+        b2.prefs.codegen.target = 'numpy'
+
+        # 1) Input preparation: support mnist with fallback to synthetic
         dataset = inp_p.get('dataset', 'mnist')
+
+        def create_digit_zero():
+            img = np.zeros((28, 28), dtype=np.uint8)
+            for i in range(28):
+                for j in range(28):
+                    dist = np.sqrt((i - 14)**2 + (j - 14)**2)
+                    if 8 <= dist <= 12:
+                        img[i, j] = 255
+            return img
+
+        def create_digit_one():
+            img = np.zeros((28, 28), dtype=np.uint8)
+            img[:, 14:17] = 255
+            img[4:8, 12:20] = 255
+            return img
+
         if dataset == 'mnist':
             try:
                 import mnist
                 images = mnist.train_images()  # shape: (60000, 28, 28)
-            except Exception as e:
-                raise RuntimeError(f"MNIST could not be loaded. Install 'mnist' package. Error: {e}")
-
-            digits = inp_p.get('patterns_to_learn', [0, 1])
-            indices = inp_p.get('image_indices', [0, 1])
-            max_rate = inp_p.get('max_rate_hz', 150)
-
-            # Take one image per digit according to provided indices
-            def get_digit_image(d, idx):
-                # pick the idx-th image with label d
                 labels = mnist.train_labels()
-                where = np.where(labels == d)[0]
-                if len(where) == 0:
-                    raise RuntimeError(f"No images found for digit {d}")
-                sel = where[min(idx, len(where)-1)]
-                return images[sel]
+                digits = inp_p.get('patterns_to_learn', [0, 1])
+                indices = inp_p.get('image_indices', [0, 1])
+                max_rate = inp_p.get('max_rate_hz', 150)
 
-            img0 = get_digit_image(digits[0], indices[0])
-            img1 = get_digit_image(digits[1], indices[1])
+                def get_digit_image(d, idx):
+                    where = np.where(labels == d)[0]
+                    if len(where) == 0:
+                        raise RuntimeError(f"No images found for digit {d}")
+                    sel = where[min(idx, len(where)-1)]
+                    return images[sel]
+
+                img0 = get_digit_image(digits[0], indices[0])
+                img1 = get_digit_image(digits[1], indices[1])
+                rates0 = image_to_poisson_rates(img0, max_rate=max_rate*b2.Hz, invert=False)
+                rates1 = image_to_poisson_rates(img1, max_rate=max_rate*b2.Hz, invert=False)
+            except Exception as e:
+                logging.warning(f"MNIST yüklenemedi (hata: {e}). Sentetik 0/1 ile devam ediliyor.")
+                max_rate = inp_p.get('max_rate_hz', 150)
+                img0 = create_digit_zero()
+                img1 = create_digit_one()
+                rates0 = image_to_poisson_rates(img0, max_rate=max_rate*b2.Hz, invert=False)
+                rates1 = image_to_poisson_rates(img1, max_rate=max_rate*b2.Hz, invert=False)
+        else:
+            # synthetic fallback
+            max_rate = inp_p.get('max_rate_hz', 150)
+            img0 = create_digit_zero()
+            img1 = create_digit_one()
             rates0 = image_to_poisson_rates(img0, max_rate=max_rate*b2.Hz, invert=False)
             rates1 = image_to_poisson_rates(img1, max_rate=max_rate*b2.Hz, invert=False)
-        else:
-            raise NotImplementedError(f"Dataset '{dataset}' not supported in this milestone.")
 
         # dynamic input layer initialized to silence
         input_layer = create_input_layer(rates0*0)
@@ -90,7 +118,9 @@ class Simulator:
             input_layer,
             num_excitatory=net_p.get('num_excitatory_l1', 100),
             num_inhibitory=net_p.get('num_inhibitory_l1', 25),
-            enable_learning=True
+            enable_learning=True,
+            enable_lateral_inhibition=net_p.get('enable_lateral_inhibition', True),
+            lateral_strength=0.2
         )
         # Adjust learning parameters on the created synapse
         syn = hierarchy.input_to_l1_synapse.synapses

@@ -10,13 +10,15 @@ class BionicColumn:
     ve aralarındaki bağlantıları içerir. "Winner-Take-All" benzeri
     bir rekabetçi dinamik oluşturur.
     """
-    def __init__(self, num_excitatory=80, num_inhibitory=20):
+    def __init__(self, num_excitatory=80, num_inhibitory=20, enable_lateral_inhibition=True, lateral_strength=0.2):
         """
         Bir Biyonik Sütun oluşturur.
 
         Args:
             num_excitatory (int): Uyarıcı nöron sayısı.
             num_inhibitory (int): Engelleyici nöron sayısı.
+            enable_lateral_inhibition (bool): Uyarıcılar arası yanal engellemeyi aç/kapat.
+            lateral_strength (float): Yanal engelleme darbelerinin şiddeti.
         """
         print(f"BionicColumn oluşturuluyor: {num_excitatory} Uyarıcı, {num_inhibitory} Engelleyici...")
         
@@ -45,10 +47,12 @@ class BionicColumn:
         self.I_to_E_synapse.synapses.w = -3.0 # Çok güçlü, negatif (baskılayıcı) bağlantı
 
         # L1 içi zayıf lateral engelleme: Uyarıcılar birbirini hafifçe baskılar (soft WTA)
-        self.E_lateral_inhib = Synapses(self.excitatory_neurons.group,
-                                        self.excitatory_neurons.group,
-                                        on_pre='v_post -= 0.2')
-        self.E_lateral_inhib.connect(condition='i != j')
+        self.E_lateral_inhib = None
+        if enable_lateral_inhibition:
+            self.E_lateral_inhib = Synapses(self.excitatory_neurons.group,
+                                            self.excitatory_neurons.group,
+                                            on_pre=f'v_post -= {float(lateral_strength)}')
+            self.E_lateral_inhib.connect(condition='i != j')
 
         print("BionicColumn oluşturuldu.")
 
@@ -57,11 +61,13 @@ class BionicColumn:
         """
         Brian2 simülatörünün bilmesi gereken tüm bileşenleri döndürür.
         """
-        return [
+        objs = [
             self.excitatory_neurons.group,
             self.inhibitory_neurons.group,
             self.E_to_E_synapse.synapses,
             self.E_to_I_synapse.synapses,
             self.I_to_E_synapse.synapses,
-            self.E_lateral_inhib
         ]
+        if self.E_lateral_inhib is not None:
+            objs.append(self.E_lateral_inhib)
+        return objs

@@ -8,18 +8,23 @@ class SimpleHierarchy:
     Bir girdi katmanı ve bir işlem katmanından (BionicColumn) oluşan
     basit, iki katmanlı ve ÖĞRENEN bir PSINet hiyerarşisi.
     """
-    def __init__(self, input_layer, num_excitatory=100, num_inhibitory=25, enable_learning=True):
+    def __init__(self, input_layer, num_excitatory=100, num_inhibitory=25, enable_learning=True,
+                 enable_lateral_inhibition=True, lateral_strength=0.2):
         """
         Args:
             input_layer (PoissonGroup): Girdi verisini sağlayan "retina".
             num_excitatory (int): İşlem sütunundaki uyarıcı nöron sayısı.
             num_inhibitory (int): İşlem sütunundaki engelleyici nöron sayısı.
             enable_learning (bool): Girdi-L1 arasındaki bağlantılarda STDP öğrenmesini aktif eder.
+            enable_lateral_inhibition (bool): L1 içi yanal engellemeyi aç/kapat.
+            lateral_strength (float): Yanal engelleme şiddeti.
         """
         self.input_layer = input_layer
         
         print("\nİşlem katmanı (L1) oluşturuluyor...")
-        self.layer1 = BionicColumn(num_excitatory, num_inhibitory)
+        self.layer1 = BionicColumn(num_excitatory, num_inhibitory,
+                                   enable_lateral_inhibition=enable_lateral_inhibition,
+                                   lateral_strength=lateral_strength)
         
         print("Girdi katmanı L1'e öğrenen sinapslarla bağlanıyor...")
         if enable_learning:
