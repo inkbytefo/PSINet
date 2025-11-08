@@ -36,11 +36,11 @@ print("📸 Test görüntüleri oluşturuluyor...")
 image_zero = create_digit_zero()
 image_one = create_digit_one()
 
-rates_zero = image_to_poisson_rates(image_zero, max_rate=120*b2.Hz)
-rates_one = image_to_poisson_rates(image_one, max_rate=120*b2.Hz)
+rates_zero = image_to_poisson_rates(image_zero, max_rate=120*b2.Hz, invert=False)
+rates_one = image_to_poisson_rates(image_one, max_rate=120*b2.Hz, invert=False)
 
-# Başlangıçta sessizlik
-input_layer = create_input_layer(np.zeros_like(rates_zero))
+# Başlangıçta sessizlik (üniteli)
+input_layer = create_input_layer(rates_zero*0)
 
 # Öğrenme AKTİF olarak hiyerarşiyi oluştur
 print("\n🎯 Öğrenme aktif hiyerarşi oluşturuluyor...")
