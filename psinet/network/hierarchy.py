@@ -1,61 +1,104 @@
 from .column import BionicColumn
-# BionicSynapse'ı içe aktaralım
 from ..core.synapse import BionicSynapse
-from brian2 import Synapses, Network
+from brian2 import Network
 
-class SimpleHierarchy:
+class Hierarchy:
     """
-    Bir girdi katmanı ve bir işlem katmanından (BionicColumn) oluşan
-    basit, iki katmanlı ve ÖĞRENEN bir PSINet hiyerarşisi.
+    Generic multi-layer hierarchy of BionicColumns with learnable inter-layer connections.
+    The first layer receives input from an external input layer (PoissonGroup),
+    and each subsequent layer receives from the previous layer's excitatory neurons.
     """
-    def __init__(self, input_layer, num_excitatory=100, num_inhibitory=25, enable_learning=True,
-                 enable_lateral_inhibition=True, lateral_strength=0.2):
+    def __init__(self, input_layer, layers_config, connections_params=None):
         """
         Args:
-            input_layer (PoissonGroup): Girdi verisini sağlayan "retina".
-            num_excitatory (int): İşlem sütunundaki uyarıcı nöron sayısı.
-            num_inhibitory (int): İşlem sütunundaki engelleyici nöron sayısı.
-            enable_learning (bool): Girdi-L1 arasındaki bağlantılarda STDP öğrenmesini aktif eder.
-            enable_lateral_inhibition (bool): L1 içi yanal engellemeyi aç/kapat.
-            lateral_strength (float): Yanal engelleme şiddeti.
+            input_layer: PoissonGroup providing input spikes.
+            layers_config: List of dicts defining each layer. Example item:
+                {
+                    'name': 'L1',
+                    'num_excitatory': 100,
+                    'num_inhibitory': 25,
+                    'enable_lateral_inhibition': True,
+                    'lateral_strength': 0.2,
+                }
+            connections_params: Dict with STDP params for connections. Keys:
+                - 'inp_<first_layer_name_lower>' e.g., 'inp_l1'
+                - '<prev>_<curr>' e.g., 'l1_l2'
+                Each value: {'w_max': float, 'a_plus': float, 'a_minus': float}
         """
         self.input_layer = input_layer
-        
-        print("\nİşlem katmanı (L1) oluşturuluyor...")
-        self.layer1 = BionicColumn(num_excitatory, num_inhibitory,
-                                   enable_lateral_inhibition=enable_lateral_inhibition,
-                                   lateral_strength=lateral_strength)
-        
-        print("Girdi katmanı L1'e öğrenen sinapslarla bağlanıyor...")
-        if enable_learning:
-            # Girdi katmanını Sütunun Uyarıcı Nöronlarına ÖĞRENEN sinapslarla bağlayalım
-            self.input_to_l1_synapse = BionicSynapse(
-                pre_neurons=self.input_layer, 
-                post_neurons=self.layer1.excitatory_neurons,
-                # Öğrenme parametrelerini burada hassas bir şekilde ayarlayabiliriz
-                w_max=0.3,
-                A_pre=0.01,
-                A_post=-0.01
+        self.layers_in_order = []
+        self.layers_by_name = {}
+        self.connections = {}
+        self.input_to_first_syn = None
+
+        # Build layers
+        for layer_def in layers_config:
+            name = layer_def.get('name', f"L{len(self.layers_in_order)+1}")
+            ne = int(layer_def.get('num_excitatory', 100))
+            ni = int(layer_def.get('num_inhibitory', 25))
+            eli = bool(layer_def.get('enable_lateral_inhibition', True))
+            lat = float(layer_def.get('lateral_strength', 0.2))
+
+            print(f"\nKatman oluşturuluyor ({name})...")
+            col = BionicColumn(ne, ni, enable_lateral_inhibition=eli, lateral_strength=lat)
+            self.layers_by_name[name] = col
+            self.layers_in_order.append(name)
+
+        # Build connections (learning-enabled)
+        cp = connections_params or {}
+
+        # Input -> first layer
+        first = self.layers_in_order[0]
+        key_inp = f"inp_{first.lower()}"
+        p_inp = cp.get(key_inp, {'w_max': 0.3, 'a_plus': 0.01, 'a_minus': -0.01})
+        print(f"Girdi -> {first} sinapsı (öğrenen) kuruluyor...")
+        self.input_to_first_syn = BionicSynapse(
+            pre_neurons=self.input_layer,
+            post_neurons=self.layers_by_name[first].excitatory_neurons,
+            w_max=p_inp.get('w_max', 0.3),
+            A_pre=p_inp.get('a_plus', 0.01),
+            A_post=p_inp.get('a_minus', -0.01)
+        )
+        self.connections[key_inp] = self.input_to_first_syn
+
+        # Inter-layer connections
+        for prev_name, curr_name in zip(self.layers_in_order[:-1], self.layers_in_order[1:]):
+            key = f"{prev_name.lower()}_{curr_name.lower()}"
+            p = cp.get(key, {'w_max': 0.3, 'a_plus': 0.01, 'a_minus': -0.01})
+            print(f"{prev_name} -> {curr_name} sinapsı (öğrenen) kuruluyor...")
+            syn = BionicSynapse(
+                pre_neurons=self.layers_by_name[prev_name].excitatory_neurons,
+                post_neurons=self.layers_by_name[curr_name].excitatory_neurons,
+                w_max=p.get('w_max', 0.3),
+                A_pre=p.get('a_plus', 0.01),
+                A_post=p.get('a_minus', -0.01)
             )
-        else:
-            # Öğrenmesiz (statik) bağlantı seçeneğini koruyalım
-            self.input_to_l1_synapse = Synapses(self.input_layer, 
-                                                self.layer1.excitatory_neurons.group, 
-                                                on_pre='v += 0.2')
-            self.input_to_l1_synapse.connect()
-        
+            self.connections[key] = syn
+
+    # Backwards compatibility helpers
+    @property
+    def layer1(self):
+        return self.layers_by_name[self.layers_in_order[0]]
+
+    @property
+    def input_to_l1_synapse(self):
+        return self.input_to_first_syn
+
     def build_network(self, *monitors):
         """
-        Tüm bileşenleri bir araya getirerek çalıştırılabilir bir Brian2 Network'ü kurar.
+        Assemble a Brian2 network with all layers, inter-layer synapses, and monitors.
         """
-        # BionicSynapse kullandığımızda, .synapses özelliğine erişmemiz gerekiyor
-        synapse_object = self.input_to_l1_synapse.synapses if hasattr(self.input_to_l1_synapse, 'synapses') else self.input_to_l1_synapse
-            
-        all_components = [
-            self.input_layer,
-            synapse_object
-        ]
-        all_components.extend(self.layer1.all_objects)
+        all_components = [self.input_layer]
+        # Include columns
+        for name in self.layers_in_order:
+            col = self.layers_by_name[name]
+            all_components.extend(col.all_objects)
+        # Include synapses (BionicSynapse exposes .synapses)
+        for syn in self.connections.values():
+            all_components.append(syn.synapses)
+        # Include monitors
         all_components.extend(monitors)
-        
         return Network(all_components)
+
+# Keep legacy alias for compatibility
+SimpleHierarchy = Hierarchy

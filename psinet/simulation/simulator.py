@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 from psinet.io.encoders import image_to_poisson_rates, create_input_layer
 from psinet.io.loaders import load_mnist
-from psinet.network.hierarchy import SimpleHierarchy
+from psinet.network.hierarchy import Hierarchy
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -75,76 +75,115 @@ class Simulator:
             img[4:8, 12:20] = 255
             return img
 
+        rates_map = {}
+        digits_list = inp_p.get('patterns_to_learn', [0, 1])
+        max_rate = inp_p.get('max_rate_hz', 150)
+
         if dataset == 'mnist':
             try:
                 images, labels = load_mnist(inp_p.get('data_dir', '~/.psinet_data'))
-                digits = inp_p.get('patterns_to_learn', [0, 1])
-                indices = inp_p.get('image_indices', [0, 1])
-                max_rate = inp_p.get('max_rate_hz', 150)
-
-                def get_digit_image(d, idx):
+                # Allow per-digit index; default to 0 for each if not provided
+                indices_cfg = inp_p.get('image_indices', None)
+                for idx_d, d in enumerate(digits_list):
+                    if indices_cfg is None:
+                        idx = 0
+                    elif isinstance(indices_cfg, list):
+                        idx = indices_cfg[min(idx_d, len(indices_cfg)-1)]
+                    else:
+                        idx = int(indices_cfg)
                     where = np.where(labels == d)[0]
                     if len(where) == 0:
                         raise RuntimeError(f"No images found for digit {d}")
                     sel = where[min(idx, len(where)-1)]
-                    return images[sel]
-
-                img0 = get_digit_image(digits[0], indices[0])
-                img1 = get_digit_image(digits[1], indices[1])
-                rates0 = image_to_poisson_rates(img0, max_rate=max_rate*b2.Hz, invert=False)
-                rates1 = image_to_poisson_rates(img1, max_rate=max_rate*b2.Hz, invert=False)
+                    img = images[sel]
+                    rates_map[d] = image_to_poisson_rates(img, max_rate=max_rate*b2.Hz, invert=False)
             except Exception as e:
                 logging.warning(f"MNIST yüklenemedi (hata: {e}). Sentetik 0/1 ile devam ediliyor. Hata: {e}")
-                max_rate = inp_p.get('max_rate_hz', 150)
                 img0 = create_digit_zero()
                 img1 = create_digit_one()
-                rates0 = image_to_poisson_rates(img0, max_rate=max_rate*b2.Hz, invert=False)
-                rates1 = image_to_poisson_rates(img1, max_rate=max_rate*b2.Hz, invert=False)
+                rates_map = {0: image_to_poisson_rates(img0, max_rate=max_rate*b2.Hz, invert=False),
+                             1: image_to_poisson_rates(img1, max_rate=max_rate*b2.Hz, invert=False)}
+                digits_list = [0, 1]
         else:
             # synthetic fallback
-            max_rate = inp_p.get('max_rate_hz', 150)
             img0 = create_digit_zero()
             img1 = create_digit_one()
-            rates0 = image_to_poisson_rates(img0, max_rate=max_rate*b2.Hz, invert=False)
-            rates1 = image_to_poisson_rates(img1, max_rate=max_rate*b2.Hz, invert=False)
+            rates_map = {0: image_to_poisson_rates(img0, max_rate=max_rate*b2.Hz, invert=False),
+                         1: image_to_poisson_rates(img1, max_rate=max_rate*b2.Hz, invert=False)}
+            digits_list = [0, 1]
 
         # dynamic input layer initialized to silence
-        input_layer = create_input_layer(rates0*0)
+        any_rates = next(iter(rates_map.values()))
+        input_layer = create_input_layer(any_rates*0)
         self.network_objects['input_layer'] = input_layer
+        self.network_objects['rates_map'] = rates_map
+        self.network_objects['digits_list'] = digits_list
 
-        # 2) Build hierarchy with learning params
-        hierarchy = SimpleHierarchy(
-            input_layer,
-            num_excitatory=net_p.get('num_excitatory_l1', 100),
-            num_inhibitory=net_p.get('num_inhibitory_l1', 25),
-            enable_learning=True,
-            enable_lateral_inhibition=net_p.get('enable_lateral_inhibition', True),
-            lateral_strength=net_p.get('lateral_strength', 0.2)
+        # 2) Build hierarchy (multi-layer aware)
+        connections_params = self.config.get('connections_params', None)
+        if 'layers' in net_p:
+            layers_config = net_p['layers']
+        else:
+            # legacy single-layer config mapping
+            layers_config = [{
+                'name': 'L1',
+                'num_excitatory': net_p.get('num_excitatory_l1', 100),
+                'num_inhibitory': net_p.get('num_inhibitory_l1', 25),
+                'enable_lateral_inhibition': net_p.get('enable_lateral_inhibition', True),
+                'lateral_strength': net_p.get('lateral_strength', 0.2),
+            }]
+            if connections_params is None:
+                # derive from legacy learning_params
+                connections_params = {
+                    'inp_l1': {
+                        'w_max': learn_p.get('w_max_inp_l1', 0.3),
+                        'a_plus': learn_p.get('a_plus_inp_l1', 0.01),
+                        'a_minus': learn_p.get('a_minus_inp_l1', -0.01),
+                    }
+                }
+
+        hierarchy = Hierarchy(
+            input_layer=input_layer,
+            layers_config=layers_config,
+            connections_params=connections_params
         )
-        # Adjust learning parameters on the created synapse
-        syn = hierarchy.input_to_l1_synapse.synapses
-        syn.wmax = learn_p.get('w_max_inp_l1', 0.3)
-        syn.Apre = learn_p.get('a_plus_inp_l1', 0.01)
-        syn.Apost = learn_p.get('a_minus_inp_l1', -0.01)
         self.network_objects['hierarchy'] = hierarchy
-        self.network_objects['rates0'] = rates0
-        self.network_objects['rates1'] = rates1
 
         # 3) Monitors
         components = []
+        # spikes: L1 always
         if mon_p.get('record_l1_spikes', True):
-            self.monitors['l1_spikes'] = b2.SpikeMonitor(hierarchy.layer1.excitatory_neurons.group)
-            components.append(self.monitors['l1_spikes'])
+            l1_name = hierarchy.layers_in_order[0]
+            self.monitors['spikes_L1'] = b2.SpikeMonitor(hierarchy.layers_by_name[l1_name].excitatory_neurons.group)
+            components.append(self.monitors['spikes_L1'])
         if mon_p.get('record_input_spikes', False):
             self.monitors['input_spikes'] = b2.SpikeMonitor(input_layer)
             components.append(self.monitors['input_spikes'])
+        # spikes: L2 if present
+        if len(hierarchy.layers_in_order) >= 2:
+            l2_name = hierarchy.layers_in_order[1]
+            self.monitors['spikes_L2'] = b2.SpikeMonitor(hierarchy.layers_by_name[l2_name].excitatory_neurons.group)
+            components.append(self.monitors['spikes_L2'])
 
-        # weight subset monitor
+        # weight subset monitors
         subset_size = int(mon_p.get('record_weight_subset_size', 100))
-        total_candidates = 28*28 * net_p.get('num_excitatory_l1', 100)
+        # Input->L1
+        first_name = hierarchy.layers_in_order[0]
+        n_exc_l1 = hierarchy.layers_by_name[first_name].excitatory_neurons.group.N
+        total_candidates = (28*28) * n_exc_l1
         subset = np.random.choice(np.arange(total_candidates), min(subset_size, total_candidates), replace=False)
-        self.monitors['weights'] = b2.StateMonitor(hierarchy.input_to_l1_synapse.synapses, 'w', record=subset)
-        components.append(self.monitors['weights'])
+        self.monitors['weights_inp_l1'] = b2.StateMonitor(hierarchy.input_to_first_syn.synapses, 'w', record=subset)
+        components.append(self.monitors['weights_inp_l1'])
+        # L1->L2 if exists
+        if len(hierarchy.layers_in_order) >= 2:
+            second_name = hierarchy.layers_in_order[1]
+            key = f"{first_name.lower()}_{second_name.lower()}"
+            if key in hierarchy.connections:
+                n_exc_l2 = hierarchy.layers_by_name[second_name].excitatory_neurons.group.N
+                total_cand_l1l2 = n_exc_l1 * n_exc_l2
+                subset2 = np.random.choice(np.arange(total_cand_l1l2), min(subset_size, total_cand_l1l2), replace=False)
+                self.monitors['weights_l1_l2'] = b2.StateMonitor(hierarchy.connections[key].synapses, 'w', record=subset2)
+                components.append(self.monitors['weights_l1_l2'])
 
         # 4) Assemble Network
         net = hierarchy.build_network(*components)
@@ -163,32 +202,34 @@ class Simulator:
         cycles = int(sim_p['cycles'])
 
         hierarchy = self.network_objects['hierarchy']
-        rates0 = self.network_objects['rates0']
-        rates1 = self.network_objects['rates1']
+        rates_map = self.network_objects['rates_map']
+        digits_list = self.network_objects['digits_list']
 
-        self.zero_windows = []
-        self.one_windows = []
+        # Windows for per-digit analysis
+        self.windows_per_digit = {d: [] for d in digits_list}
 
-        logging.info(f"Starting dynamic loop: {cycles}x [ '0' ({show}), rest ({rest}), '1' ({show}), rest ({rest}) ]")
+        # Sequence construction: if present_all_digits flag, iterate all digits per cycle
+        present_all = bool(sim_p.get('present_all_digits', False))
+        if present_all:
+            logging.info(f"Starting multi-digit loop: {cycles} cycles over digits {digits_list} with show={show}, rest={rest}")
+        else:
+            logging.info(f"Starting 2-digit loop: {cycles}x over {digits_list} with show={show}, rest={rest}")
+
         current_t = 0 * b2.second
+        import random
         for _ in range(cycles):
-            hierarchy.input_layer.rates = rates0
-            self.brian2_network.run(show, report='text')
-            self.zero_windows.append((current_t, current_t + show))
-            current_t += show
-
-            hierarchy.input_layer.rates = 0 * b2.Hz
-            self.brian2_network.run(rest)
-            current_t += rest
-
-            hierarchy.input_layer.rates = rates1
-            self.brian2_network.run(show, report='text')
-            self.one_windows.append((current_t, current_t + show))
-            current_t += show
-
-            hierarchy.input_layer.rates = 0 * b2.Hz
-            self.brian2_network.run(rest)
-            current_t += rest
+            seq = digits_list.copy()
+            if present_all:
+                random.shuffle(seq)
+            for d in seq:
+                rates = rates_map[d]
+                hierarchy.input_layer.rates = rates
+                self.brian2_network.run(show, report='text')
+                self.windows_per_digit[d].append((current_t, current_t + show))
+                current_t += show
+                hierarchy.input_layer.rates = 0 * b2.Hz
+                self.brian2_network.run(rest)
+                current_t += rest
 
         logging.info("Simulation finished.")
 
@@ -201,69 +242,111 @@ class Simulator:
         # raw data
         if self.config['output_params'].get('save_raw_data', True):
             npz_payload = {}
-            if 'l1_spikes' in self.monitors:
-                npz_payload['l1_t_ms'] = (self.monitors['l1_spikes'].t / b2.ms).astype(float)
-                npz_payload['l1_i'] = np.array(self.monitors['l1_spikes'].i)
+            # spikes L1
+            if 'spikes_L1' in self.monitors:
+                npz_payload['L1_t_ms'] = (self.monitors['spikes_L1'].t / b2.ms).astype(float)
+                npz_payload['L1_i'] = np.array(self.monitors['spikes_L1'].i)
+            # spikes L2
+            if 'spikes_L2' in self.monitors:
+                npz_payload['L2_t_ms'] = (self.monitors['spikes_L2'].t / b2.ms).astype(float)
+                npz_payload['L2_i'] = np.array(self.monitors['spikes_L2'].i)
+            # input
             if 'input_spikes' in self.monitors:
                 npz_payload['inp_t_ms'] = (self.monitors['input_spikes'].t / b2.ms).astype(float)
                 npz_payload['inp_i'] = np.array(self.monitors['input_spikes'].i)
-            if 'weights' in self.monitors:
-                npz_payload['w_t_ms'] = (self.monitors['weights'].t / b2.ms).astype(float)
-                npz_payload['w'] = self.monitors['weights'].w.T
-            # windows
-            z0 = np.array([[w[0]/b2.ms, w[1]/b2.ms] for w in self.zero_windows])
-            o1 = np.array([[w[0]/b2.ms, w[1]/b2.ms] for w in self.one_windows])
-            npz_payload['zero_windows_ms'] = z0
-            npz_payload['one_windows_ms'] = o1
-            np.savez_compressed(out / 'raw_data.npz', **npz_payload)
+            # weights
+            if 'weights_inp_l1' in self.monitors:
+                npz_payload['w_inp_l1_t_ms'] = (self.monitors['weights_inp_l1'].t / b2.ms).astype(float)
+                npz_payload['w_inp_l1'] = self.monitors['weights_inp_l1'].w.T
+            if 'weights_l1_l2' in self.monitors:
+                npz_payload['w_l1_l2_t_ms'] = (self.monitors['weights_l1_l2'].t / b2.ms).astype(float)
+                npz_payload['w_l1_l2'] = self.monitors['weights_l1_l2'].w.T
+            # windows per digit
+            win = {int(k): np.array([[w[0]/b2.ms, w[1]/b2.ms] for w in v]) for k, v in self.windows_per_digit.items()}
+            np.savez_compressed(out / 'raw_data.npz', **npz_payload, windows_per_digit=win)
 
         # plots
-        if self.config['output_params'].get('save_plots', True) and 'l1_spikes' in self.monitors:
-            N = self.network_objects['hierarchy'].layer1.excitatory_neurons.group.N
-            spike_t = self.monitors['l1_spikes'].t
-            spike_i = self.monitors['l1_spikes'].i
+        if self.config['output_params'].get('save_plots', True) and 'spikes_L1' in self.monitors:
+            l1_name = self.network_objects['hierarchy'].layers_in_order[0]
+            N1 = self.network_objects['hierarchy'].layers_by_name[l1_name].excitatory_neurons.group.N
+            t1 = self.monitors['spikes_L1'].t
+            i1 = self.monitors['spikes_L1'].i
 
-            counts_zero = np.zeros(N, dtype=int)
-            counts_one = np.zeros(N, dtype=int)
-            for t0, t1 in self.zero_windows:
-                mask = (spike_t >= t0) & (spike_t < t1)
-                if np.any(mask):
-                    idx, cnt = np.unique(spike_i[mask], return_counts=True)
-                    counts_zero[idx] += cnt
-            for t0, t1 in self.one_windows:
-                mask = (spike_t >= t0) & (spike_t < t1)
-                if np.any(mask):
-                    idx, cnt = np.unique(spike_i[mask], return_counts=True)
-                    counts_one[idx] += cnt
+            # Per-digit counts for L1 (if classic two-digit, still works)
+            counts_per_digit = {d: np.zeros(N1, dtype=int) for d in self.windows_per_digit.keys()}
+            for d, windows in self.windows_per_digit.items():
+                for t0, t1w in windows:
+                    mask = (t1 >= t0) & (t1 < t1w)
+                    if np.any(mask):
+                        idx, cnt = np.unique(i1[mask], return_counts=True)
+                        counts_per_digit[d][idx] += cnt
 
-            preference = counts_zero - counts_one
+            # Prepare figure with optional L2
+            has_l2 = 'spikes_L2' in self.monitors
+            fig_rows = 3 if has_l2 else 2
+            fig, axes = plt.subplots(fig_rows, 2, figsize=(14, 6 + 3*fig_rows))
 
-            fig, axes = plt.subplots(2, 2, figsize=(14, 12))
-            axes[0, 0].plot(spike_t / b2.ms, spike_i, '.k', markersize=1)
+            # L1 raster
+            axes[0, 0].plot(t1 / b2.ms, i1, '.k', markersize=1)
             axes[0, 0].set_title('L1 Spikes')
             axes[0, 0].set_xlabel('Time (ms)')
             axes[0, 0].set_ylabel('Neuron index')
             axes[0, 0].grid(True, alpha=0.3)
 
-            colors = np.where(preference >= 0, 'tab:red', 'tab:blue')
-            axes[0, 1].bar(np.arange(N), preference, color=colors, width=0.9)
-            axes[0, 1].set_title('Preference (pos: 0, neg: 1)')
-            axes[0, 1].axhline(0, color='k', linewidth=0.8)
+            # Simple preference plot for two digits if present, else sum top/bottom
+            if len(counts_per_digit) == 2:
+                digits = sorted(counts_per_digit.keys())
+                pref = counts_per_digit[digits[0]] - counts_per_digit[digits[1]]
+                colors = np.where(pref >= 0, 'tab:red', 'tab:blue')
+                axes[0, 1].bar(np.arange(N1), pref, color=colors, width=0.9)
+                axes[0, 1].set_title(f'Preference (pos: {digits[0]}, neg: {digits[1]})')
+                axes[0, 1].axhline(0, color='k', linewidth=0.8)
+            else:
+                total_counts = np.sum(np.stack(list(counts_per_digit.values()), axis=0), axis=0)
+                axes[0, 1].bar(np.arange(N1), total_counts, color='tab:gray', width=0.9)
+                axes[0, 1].set_title('L1 total spike counts (all digits)')
 
-            # weight evolution if present
-            if 'weights' in self.monitors:
-                axes[1, 0].plot(self.monitors['weights'].t / b2.ms, self.monitors['weights'].w.T, alpha=0.7, linewidth=0.8)
-                axes[1, 0].set_title('Sampled weight dynamics')
+            # Weight dynamics (Input->L1)
+            if 'weights_inp_l1' in self.monitors:
+                axes[1, 0].plot(self.monitors['weights_inp_l1'].t / b2.ms, self.monitors['weights_inp_l1'].w.T, alpha=0.7, linewidth=0.8)
+                axes[1, 0].set_title('Input→L1 weight dynamics (sampled)')
                 axes[1, 0].set_xlabel('Time (ms)')
                 axes[1, 0].set_ylabel('w')
                 axes[1, 0].grid(True, alpha=0.3)
 
-            # simple summary text
-            total_spikes = len(spike_t)
-            active_neurons = len(np.unique(spike_i))
-            text = f"Total spikes: {total_spikes}\nActive L1 neurons: {active_neurons}/{N}"
-            axes[1, 1].axis('off')
-            axes[1, 1].text(0.05, 0.9, text, fontsize=12, va='top')
+            # Summary text / L2 or L1->L2 weights
+            if has_l2:
+                t2 = self.monitors['spikes_L2'].t
+                i2 = self.monitors['spikes_L2'].i
+                axes[1, 1].plot(t2 / b2.ms, i2, '.k', markersize=1)
+                axes[1, 1].set_title('L2 Spikes')
+                axes[1, 1].set_xlabel('Time (ms)')
+                axes[1, 1].set_ylabel('Neuron index')
+                axes[1, 1].grid(True, alpha=0.3)
+
+                # L1->L2 weight dynamics if present
+                if 'weights_l1_l2' in self.monitors and fig_rows >= 3:
+                    axes[2, 0].plot(self.monitors['weights_l1_l2'].t / b2.ms, self.monitors['weights_l1_l2'].w.T, alpha=0.7, linewidth=0.8)
+                    axes[2, 0].set_title('L1→L2 weight dynamics (sampled)')
+                    axes[2, 0].set_xlabel('Time (ms)')
+                    axes[2, 0].set_ylabel('w')
+                    axes[2, 0].grid(True, alpha=0.3)
+
+                # Summary text
+                total_spikes_l1 = len(t1)
+                active_l1 = len(np.unique(i1))
+                total_spikes_l2 = len(t2)
+                active_l2 = len(np.unique(i2))
+                text = f"L1: spikes={total_spikes_l1}, active={active_l1}/{N1}\nL2: spikes={total_spikes_l2}, active={active_l2}"
+                axes[2 if fig_rows==3 else 1, 1].axis('off')
+                axes[2 if fig_rows==3 else 1, 1].text(0.05, 0.9, text, fontsize=12, va='top')
+            else:
+                # No L2: put summary in bottom-right
+                total_spikes_l1 = len(t1)
+                active_l1 = len(np.unique(i1))
+                text = f"L1: spikes={total_spikes_l1}, active={active_l1}/{N1}"
+                axes[1, 1].axis('off')
+                axes[1, 1].text(0.05, 0.9, text, fontsize=12, va='top')
 
             plt.tight_layout()
             plt.savefig(out / 'final_plot.png', dpi=150, bbox_inches='tight')
