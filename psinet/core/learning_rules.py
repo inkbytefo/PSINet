@@ -1,12 +1,12 @@
 # Bu dosya, farklı sinaptik plastisite kurallarını saklayacaktır.
 
-# Standart Ateşleme Zamanlamasına Bağlı Plastisite (STDP) Kuralı
+# Basitleştirilmiş STDP Kuralı (sıfıra bölme hatasını önlemek için)
 STDP_EQUATION = '''
     w : 1 # Sinaptik ağırlık
     
-    # Ateşleme "izleri" (traces)
-    dapre/dt = -apre / taupre : 1 (clock-driven)
-    dapost/dt = -apost / taupost : 1 (clock-driven)
+    # Ateşleme "izleri" (traces) - exponential decay
+    dapre/dt = -apre / (taupre + 1e-10*second) : 1 (clock-driven)
+    dapost/dt = -apost / (taupost + 1e-10*second) : 1 (clock-driven)
     
     # STDP parametreleri
     taupre : second

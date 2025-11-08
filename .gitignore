@@ -128,13 +128,6 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# PSINet specific
-*.png
-*.jpg
-*.jpeg
-*.gif
-*.svg
-*.pdf
 
 # Brian2 cache
 brian2_cache/
