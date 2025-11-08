@@ -222,10 +222,10 @@ class Simulator:
         # Sequence construction: if present_all_digits flag, iterate all digits per cycle
         present_all = bool(sim_p.get('present_all_digits', False))
         if present_all:
-        # In cpp_standalone, we need to build once before multiple run() calls
-        device = self.config['simulation_params'].get('brian2_device', 'runtime')
-        if device == 'cpp_standalone':
-            b2.device.build(directory=str(self.output_dir / 'brian2_build'), compile=True, run=False, debug=False)
+            # In cpp_standalone, we need to build once before multiple run() calls
+            device = self.config['simulation_params'].get('brian2_device', 'runtime')
+            if device == 'cpp_standalone':
+                b2.device.build(directory=str(self.output_dir / 'brian2_build'), compile=True, run=False, debug=False)
 
             logging.info(f"Starting multi-digit loop: {cycles} cycles over digits {digits_list} with show={show}, rest={rest}")
         else:
@@ -347,13 +347,14 @@ class Simulator:
                     axes[2, 0].set_xlabel('Time (ms)')
                     axes[2, 0].set_ylabel('w')
 
-                # L2 selectivity analysis and bar plot
+                # Enhanced L2 selectivity analysis and bar plot
                 try:
                     l2_name = self.network_objects['hierarchy'].layers_in_order[1]
                     N2 = self.network_objects['hierarchy'].layers_by_name[l2_name].excitatory_neurons.group.N
                 except Exception:
                     N2 = None
                 if N2 is not None:
+                    # Calculate L2 spike counts per digit
                     counts_l2 = {d: np.zeros(N2, dtype=int) for d in self.windows_per_digit.keys()}
                     for d, windows in self.windows_per_digit.items():
                         for t0, t1w in windows:
@@ -363,25 +364,48 @@ class Simulator:
                                 # clip indices to N2 in case of any monitor drift
                                 mask_valid = idx < N2
                                 counts_l2[d][idx[mask_valid]] += cnt[mask_valid]
-                    # preferred digit per neuron
+                    
+                    # Find preferred digit for each L2 neuron
                     digits_sorted = sorted(self.windows_per_digit.keys())
                     mat = np.stack([counts_l2[d] for d in digits_sorted], axis=1)  # shape (N2, num_digits)
                     pref_digit_idx = np.argmax(mat, axis=1)
                     pref_digit = np.array(digits_sorted)[pref_digit_idx]
                     pref_count = mat[np.arange(N2), pref_digit_idx]
-                    # plotting
+                    
+                    # Enhanced L2 selectivity bar chart
                     ax_sel = axes[1, 2] if fig_rows == 3 else axes[1, 1]
                     cmap = plt.get_cmap('tab10')
                     colors = [cmap(int(d) % 10) for d in pref_digit]
-                    ax_sel.bar(np.arange(N2), pref_count, color=colors, width=0.9)
-                    ax_sel.set_title('L2 preferred-digit selectivity (color=preferred digit)')
-                    ax_sel.set_xlabel('L2 neuron index')
-                    ax_sel.set_ylabel('Spike count (preferred digit)')
-                    # add colorbar legend mapping digits to colors
+                    
+                    # Create bar chart with enhanced visualization
+                    bars = ax_sel.bar(np.arange(N2), pref_count, color=colors, width=0.9)
+                    ax_sel.set_title('L2 Neuron Selectivity Analysis\n(Bar color = Preferred Digit, Height = Spike Count)',
+                                   fontsize=10, fontweight='bold')
+                    ax_sel.set_xlabel('L2 Neuron Index', fontsize=9)
+                    ax_sel.set_ylabel('Spike Count for Preferred Digit', fontsize=9)
+                    ax_sel.grid(True, alpha=0.3, axis='y')
+                    
+                    # Add colorbar legend mapping digits to colors
                     sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=0, vmax=9))
-                    cbar = plt.colorbar(sm, ax=ax_sel)
-                    cbar.set_ticks(range(10))
+                    sm.set_array([])
+                    cbar = plt.colorbar(sm, ax=ax_sel, fraction=0.046, pad=0.04)
+                    cbar.set_ticks(np.arange(10))
                     cbar.set_ticklabels([str(d) for d in range(10)])
+                    cbar.set_label('Digit', fontsize=9)
+                    
+                    # Add statistics text
+                    total_neurons = N2
+                    digit_specialists = {d: np.sum(pref_digit == d) for d in digits_sorted}
+                    max_specialists = max(digit_specialists.values())
+                    most_specialized_digit = [d for d, count in digit_specialists.items() if count == max_specialists][0]
+                    
+                    stats_text = f"Total L2 neurons: {total_neurons}\n"
+                    stats_text += f"Most specialized digit: {most_specialized_digit} ({max_specialists} neurons)\n"
+                    stats_text += f"Digit specialists: " + ", ".join([f"{d}:{count}" for d, count in digit_specialists.items()])
+                    
+                    ax_sel.text(0.02, 0.98, stats_text, transform=ax_sel.transAxes,
+                               fontsize=8, verticalalignment='top',
+                               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
 
                     axes[2, 0].grid(True, alpha=0.3)
 

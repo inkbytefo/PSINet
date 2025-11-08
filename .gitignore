@@ -147,3 +147,7 @@ Thumbs.db
 *.temp
 # Simulation outputs
 outputs/
+
+
+.github/instructions/kluster-code-verify.instructions.md
+.kluster
