@@ -1,0 +1,52 @@
+# Performance-tuned deep hierarchy configuration
+run_id: mnist_deep_performance_v1
+
+simulation_params:
+  brian2_device: cpp_standalone
+  duration_per_pattern_ms: 200
+  silence_period_ms: 100
+  cycles: 20
+  present_all_digits: true
+
+input_params:
+  dataset: mnist
+  data_dir: ~/.psinet_data
+  patterns_to_learn: [0,1,2,3,4,5,6,7,8,9]
+  max_rate_hz: 200
+
+network_params:
+  layers:
+    - name: L1
+      num_excitatory: 100
+      num_inhibitory: 25
+      enable_lateral_inhibition: true
+      lateral_strength: 0.2
+    - name: L2
+      num_excitatory: 50
+      num_inhibitory: 12
+      enable_lateral_inhibition: true
+      lateral_strength: 0.3
+
+connections_params:
+  inp_l1:
+    w_max: 0.3
+    a_plus: 0.01
+    a_minus: -0.01
+    tau_plus_ms: 20.0
+    tau_minus_ms: 20.0
+  l1_l2:
+    w_max: 0.5
+    a_plus: 0.01
+    a_minus: -0.01
+    tau_plus_ms: 20.0
+    tau_minus_ms: 20.0
+
+monitor_params:
+  record_l1_spikes: true
+  record_input_spikes: false
+  record_weight_subset_size: 100
+
+output_params:
+  base_output_dir: outputs
+  save_plots: true
+  save_raw_data: true

@@ -7,6 +7,7 @@ import logging
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 
 from psinet.io.encoders import image_to_poisson_rates, create_input_layer
 from psinet.io.loaders import load_mnist
@@ -54,8 +55,10 @@ class Simulator:
         # Device selection
         device = sim_p.get('brian2_device', 'runtime')
         if device == 'cpp_standalone':
-            b2.set_device('cpp_standalone', directory=str(self.output_dir / 'brian2_build'))
-        b2.prefs.codegen.target = 'numpy'
+            b2.set_device('cpp_standalone', directory=str(self.output_dir / 'brian2_build'), build_on_run=False)
+        else:
+            b2.prefs.codegen.target = 'numpy'
+        # Ensure if user supplies tau constants in YAML we keep brian2 units compatible
 
         # 1) Input preparation: support mnist with fallback to synthetic
         dataset = inp_p.get('dataset', 'mnist')
@@ -164,6 +167,9 @@ class Simulator:
             l2_name = hierarchy.layers_in_order[1]
             self.monitors['spikes_L2'] = b2.SpikeMonitor(hierarchy.layers_by_name[l2_name].excitatory_neurons.group)
             components.append(self.monitors['spikes_L2'])
+            # Optional: add a population rate monitor for L2 (could aid performance debugging)
+            # self.monitors['rate_L2'] = b2.PopulationRateMonitor(hierarchy.layers_by_name[l2_name].excitatory_neurons.group)
+            # components.append(self.monitors['rate_L2'])
 
         # weight subset monitors
         subset_size = int(mon_p.get('record_weight_subset_size', 100))
@@ -188,6 +194,11 @@ class Simulator:
         # 4) Assemble Network
         net = hierarchy.build_network(*components)
         self.brian2_network = net
+
+        # In cpp_standalone, multiple run calls require build_on_run=False and explicit build
+        sim_p = self.config['simulation_params']
+        device = sim_p.get('brian2_device', 'runtime')
+        # In cpp_standalone we delay final build until after all run() calls
         logging.info("Network build complete.")
 
     # ------------------------------- RUN -----------------------------------
@@ -211,6 +222,11 @@ class Simulator:
         # Sequence construction: if present_all_digits flag, iterate all digits per cycle
         present_all = bool(sim_p.get('present_all_digits', False))
         if present_all:
+        # In cpp_standalone, we need to build once before multiple run() calls
+        device = self.config['simulation_params'].get('brian2_device', 'runtime')
+        if device == 'cpp_standalone':
+            b2.device.build(directory=str(self.output_dir / 'brian2_build'), compile=True, run=False, debug=False)
+
             logging.info(f"Starting multi-digit loop: {cycles} cycles over digits {digits_list} with show={show}, rest={rest}")
         else:
             logging.info(f"Starting 2-digit loop: {cycles}x over {digits_list} with show={show}, rest={rest}")
@@ -284,7 +300,7 @@ class Simulator:
             # Prepare figure with optional L2
             has_l2 = 'spikes_L2' in self.monitors
             fig_rows = 3 if has_l2 else 2
-            fig, axes = plt.subplots(fig_rows, 2, figsize=(14, 6 + 3*fig_rows))
+            fig, axes = plt.subplots(fig_rows, 3 if has_l2 else 2, figsize=(18 if has_l2 else 14, 6 + 3*fig_rows))
 
             # L1 raster
             axes[0, 0].plot(t1 / b2.ms, i1, '.k', markersize=1)
@@ -330,6 +346,43 @@ class Simulator:
                     axes[2, 0].set_title('L1→L2 weight dynamics (sampled)')
                     axes[2, 0].set_xlabel('Time (ms)')
                     axes[2, 0].set_ylabel('w')
+
+                # L2 selectivity analysis and bar plot
+                try:
+                    l2_name = self.network_objects['hierarchy'].layers_in_order[1]
+                    N2 = self.network_objects['hierarchy'].layers_by_name[l2_name].excitatory_neurons.group.N
+                except Exception:
+                    N2 = None
+                if N2 is not None:
+                    counts_l2 = {d: np.zeros(N2, dtype=int) for d in self.windows_per_digit.keys()}
+                    for d, windows in self.windows_per_digit.items():
+                        for t0, t1w in windows:
+                            m = (t2 >= t0) & (t2 < t1w)
+                            if np.any(m):
+                                idx, cnt = np.unique(i2[m], return_counts=True)
+                                # clip indices to N2 in case of any monitor drift
+                                mask_valid = idx < N2
+                                counts_l2[d][idx[mask_valid]] += cnt[mask_valid]
+                    # preferred digit per neuron
+                    digits_sorted = sorted(self.windows_per_digit.keys())
+                    mat = np.stack([counts_l2[d] for d in digits_sorted], axis=1)  # shape (N2, num_digits)
+                    pref_digit_idx = np.argmax(mat, axis=1)
+                    pref_digit = np.array(digits_sorted)[pref_digit_idx]
+                    pref_count = mat[np.arange(N2), pref_digit_idx]
+                    # plotting
+                    ax_sel = axes[1, 2] if fig_rows == 3 else axes[1, 1]
+                    cmap = plt.get_cmap('tab10')
+                    colors = [cmap(int(d) % 10) for d in pref_digit]
+                    ax_sel.bar(np.arange(N2), pref_count, color=colors, width=0.9)
+                    ax_sel.set_title('L2 preferred-digit selectivity (color=preferred digit)')
+                    ax_sel.set_xlabel('L2 neuron index')
+                    ax_sel.set_ylabel('Spike count (preferred digit)')
+                    # add colorbar legend mapping digits to colors
+                    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=0, vmax=9))
+                    cbar = plt.colorbar(sm, ax=ax_sel)
+                    cbar.set_ticks(range(10))
+                    cbar.set_ticklabels([str(d) for d in range(10)])
+
                     axes[2, 0].grid(True, alpha=0.3)
 
                 # Summary text

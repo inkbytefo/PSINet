@@ -19,7 +19,6 @@ class BionicSynapse:
                                   A_post'un A_pre'den biraz daha negatif olması
                                   genellikle daha kararlı bir öğrenme sağlar.
         """
-        # pre_neurons'un .group özelliği olup olmadığını kontrol et
         pre_group = pre_neurons.group if hasattr(pre_neurons, 'group') else pre_neurons
         post_group = post_neurons.group if hasattr(post_neurons, 'group') else post_neurons
         
@@ -31,18 +30,28 @@ class BionicSynapse:
             on_post=STDP_ON_POST
         )
         
-        # Tüm olası bağlantıları kur
         self.synapses.connect()
         
-        # Öğrenme parametrelerini ayarla
+        # Öğrenme parametrelerini ayarla (defaults; caller may override after object creation)
         self.synapses.taupre = tau_pre
         self.synapses.taupost = tau_post
         self.synapses.wmax = w_max
         self.synapses.Apre = A_pre
         self.synapses.Apost = A_post
         
-        # Başlangıç ağırlıklarını ayarla (çok küçük rastgele değerler)
         self.synapses.w = 'rand() * 0.01'
+    
+    def set_learning_params(self, tau_pre=None, tau_post=None, w_max=None, A_pre=None, A_post=None):
+        if tau_pre is not None:
+            self.synapses.taupre = tau_pre
+        if tau_post is not None:
+            self.synapses.taupost = tau_post
+        if w_max is not None:
+            self.synapses.wmax = w_max
+        if A_pre is not None:
+            self.synapses.Apre = A_pre
+        if A_post is not None:
+            self.synapses.Apost = A_post
     
     def __repr__(self):
         return f"BionicSynapse connecting {self.synapses.source.N} to {self.synapses.target.N} neurons."

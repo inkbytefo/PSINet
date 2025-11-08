@@ -1,6 +1,6 @@
 from .column import BionicColumn
 from ..core.synapse import BionicSynapse
-from brian2 import Network
+from brian2 import Network, ms
 
 class Hierarchy:
     """
@@ -50,28 +50,32 @@ class Hierarchy:
         # Input -> first layer
         first = self.layers_in_order[0]
         key_inp = f"inp_{first.lower()}"
-        p_inp = cp.get(key_inp, {'w_max': 0.3, 'a_plus': 0.01, 'a_minus': -0.01})
+        p_inp = cp.get(key_inp, {'w_max': 0.3, 'a_plus': 0.01, 'a_minus': -0.01, 'tau_plus_ms': 20.0, 'tau_minus_ms': 20.0})
         print(f"Girdi -> {first} sinapsı (öğrenen) kuruluyor...")
         self.input_to_first_syn = BionicSynapse(
             pre_neurons=self.input_layer,
             post_neurons=self.layers_by_name[first].excitatory_neurons,
             w_max=p_inp.get('w_max', 0.3),
             A_pre=p_inp.get('a_plus', 0.01),
-            A_post=p_inp.get('a_minus', -0.01)
+            A_post=p_inp.get('a_minus', -0.01),
+            tau_pre=p_inp.get('tau_plus_ms', 20.0)*ms,
+            tau_post=p_inp.get('tau_minus_ms', 20.0)*ms,
         )
         self.connections[key_inp] = self.input_to_first_syn
 
         # Inter-layer connections
         for prev_name, curr_name in zip(self.layers_in_order[:-1], self.layers_in_order[1:]):
             key = f"{prev_name.lower()}_{curr_name.lower()}"
-            p = cp.get(key, {'w_max': 0.3, 'a_plus': 0.01, 'a_minus': -0.01})
+            p = cp.get(key, {'w_max': 0.3, 'a_plus': 0.01, 'a_minus': -0.01, 'tau_plus_ms': 20.0, 'tau_minus_ms': 20.0})
             print(f"{prev_name} -> {curr_name} sinapsı (öğrenen) kuruluyor...")
             syn = BionicSynapse(
                 pre_neurons=self.layers_by_name[prev_name].excitatory_neurons,
                 post_neurons=self.layers_by_name[curr_name].excitatory_neurons,
                 w_max=p.get('w_max', 0.3),
                 A_pre=p.get('a_plus', 0.01),
-                A_post=p.get('a_minus', -0.01)
+                A_post=p.get('a_minus', -0.01),
+                tau_pre=p.get('tau_plus_ms', 20.0)*ms,
+                tau_post=p.get('tau_minus_ms', 20.0)*ms,
             )
             self.connections[key] = syn
 

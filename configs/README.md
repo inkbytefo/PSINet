@@ -10,6 +10,9 @@ This directory contains YAML configurations for running PSINet simulations via t
 - mnist_deep_hierarchy.yaml
   - Purpose: two-layer hierarchy (L1→L2) across all digits (0–9) with multi-digit presentation schedule.
 
+- mnist_deep_performance.yaml
+  - Purpose: deep hierarchy with cpp_standalone backend, higher cycles, and shorter presentations for long-duration training.
+
 Deep schema extensions:
 - network_params.layers: List of layer dicts, each with:
   - name, num_excitatory, num_inhibitory, enable_lateral_inhibition, lateral_strength
